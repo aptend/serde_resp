@@ -6,74 +6,97 @@ use serde::de::{
 
 use super::error::{Error, Result};
 
+use std::io::{self, Read, BufRead};
+
+use std::marker::PhantomData;
+
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
-pub struct Deserializer<'de> {
-    // resp 默认输出 &[u8], 所以数据格式保持一致
-    input: &'de [u8],
+pub struct Deserializer<'de, R> {
+    reader: io::BufReader<R>,
+    byte_offset: usize,
+    marker: PhantomData<&'de ()>,
 }
 
-impl<'de> Deserializer<'de> {
-    // deserializer 的构造函数名，按照约定，通常为 from_xxx
-    // 和 crate 对外暴露的反序列方法一致
-    // 比如 serde_json::from_str() 就是使用serde_json::Deserializer::from_str()
-    // 来构建一个 deserializer
-    pub fn from_bytes(input: &'de [u8]) -> Self {
-        Deserializer { input }
-    }
-}
 
 // 暴露的公共API，表明反序列化要用的数据格式，形如 from_xxx
 pub fn from_bytes<'a, T>(s: &'a [u8]) -> Result<T>
 where
     T: Deserialize<'a>,
 {
-    let mut deserializer = Deserializer::from_bytes(s);
+    let mut deserializer = Deserializer::from_reader(s);
     let t = T::deserialize(&mut deserializer)?;
-    if deserializer.input.is_empty() {
-        Ok(t)
-    } else {
-        Err(Error::TrailingBytes)
-    }
+    Ok(t)
+    // if deserializer.input.is_empty() {
+    //     Ok(t)
+    // } else {
+    //     Err(Error::TrailingBytes)
+    // }
 }
 
-// SERDE IS NOT A PARSING LIBRARY.
-// Serde 本身并不为 parsing 而生。
-// 虽然这里手工实现了一些 parsing 用的方法，但是，
-// 生产中应该使用额外的 parsing lib 来提高效率和稳定性
-impl<'de> Deserializer<'de> {
-    // 查看第一个u8
-    fn peek_char(&mut self) -> Result<u8> {
-        self.input.iter().cloned().next().ok_or(Error::Eof)
+impl<'de, R: io::Read> Deserializer<'de, R> {
+
+    pub fn from_reader(r: R) -> Self {
+        Deserializer {
+            reader: io::BufReader::new(r),
+            byte_offset: 0,
+            marker: PhantomData,
+        }
     }
 
-    // 消费第一个u8
+    // 查看第一个u8
+    fn peek_char(&mut self) -> Result<u8> {
+        Ok(self.peek_nchar(1)?[0])
+    }
+
+    fn peek_nchar(&mut self, n: usize) -> Result<&[u8]> {
+        while self.reader.buffer().len() < n {
+            if self.reader.fill_buf()?.len() == 0 {
+                return Err(Error::Eof);
+            }
+        }
+        Ok(&self.reader.buffer()[0..n])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.reader.consume(n)
+    }
+
     fn next_char(&mut self) -> Result<u8> {
         let ch = self.peek_char()?;
-        self.input = &self.input[1..];
+        self.consume(1);
+        self.byte_offset += 1;
         Ok(ch)
     }
 
+    fn next_lf(&mut self) -> Result<Vec<u8>> {
+        let mut buf = vec![];
+        let n = self.reader.read_until(LF, &mut buf)?;
+        if n == 0 {
+            return Err(Error::Eof);
+        }
+
+        if n < 2 || buf[n - 2] != CR {
+            return Err(Error::UnbalancedCRLF);
+        }
+
+        Ok(buf)
+    }
+
+
     fn next_length_hint(&mut self) -> Result<Option<usize>> {
-        if self.peek_char()? == b'-' {
-            if self.input.starts_with(b"-1\r\n") {
-                self.input = &self.input[4..];
-                return Ok(None);
+        let buf = self.next_lf()?;
+        let n = buf.len();
+        if buf[0] == b'-' {
+            if buf.len() == 4 || buf == b"-1\r\n" {
+                return Ok(None)
             } else {
                 return Err(Error::BadLengthHint);
             }
         }
-        let i = self
-            .input
-            .iter()
-            .position(|x| x == &LF)
-            .ok_or(Error::ExpectedLF)?;
-        if self.input[i - 1] != CR {
-            return Err(Error::UnbalancedCRLF);
-        }
         let mut len = 0;
-        for &ch in self.input.iter().take(i - 1) {
+        for &ch in buf.iter().take(n-2) {
             match ch {
                 ch @ b'0'..=b'9' => {
                     len *= 10;
@@ -82,62 +105,42 @@ impl<'de> Deserializer<'de> {
                 _ => return Err(Error::BadLengthHint),
             }
         }
-        self.input = &self.input[i + 1..];
+        self.byte_offset += n;
         Ok(Some(len))
     }
 
-    fn parse_bulk_string(&mut self) -> Result<Option<&'de [u8]>> {
+
+    fn parse_bulk_string(&mut self) -> Result<Option<Vec<u8>>> {
         if self.next_char()? != b'$' {
-            return Err(Error::ExpectedMoreBulkString);
+            return Err(Error::ExpectedDollarSign);
         }
         match self.next_length_hint()? {
             Some(len) => {
-                if len + 2 > self.input.len() {
-                    return Err(Error::ExpectedMoreContent);
-                }
-                let content = &self.input[..len];
-                if self.input[len + 1] != LF {
+                let mut buf = vec![0; len+2];
+                self.reader.read_exact(&mut buf)?;
+                if buf[len + 1] != LF {
                     return Err(Error::ExpectedLF);
                 }
-                if self.input[len] != CR {
+                if buf[len] != CR {
                     return Err(Error::UnbalancedCRLF);
                 }
-
-                self.input = &self.input[len + 2..];
-                Ok(Some(content))
+                self.byte_offset += len + 2;
+                Ok(Some(buf))
             }
             None => Ok(None),
         }
     }
 
-    // 解析作为 bulk string 的 bool
     fn parse_bool(&mut self) -> Result<bool> {
-        if self.input.starts_with(b"$4\r\ntrue\r\n") {
-            self.input = &self.input[10..];
+        if self.peek_nchar(10)? == b"$4\r\ntrue\r\n" {
+            self.consume(10);
             Ok(true)
-        } else if self.input.starts_with(b"$5\r\nfalse\r\n") {
-            self.input = &self.input[11..];
+        } else if self.peek_nchar(11)? == b"$5\r\nfalse\r\n" {
+            self.consume(11);
             Ok(false)
         } else {
             Err(Error::ExpectedBoolean)
         }
-    }
-
-    fn parse_num<T>(&self, slice: &[u8]) -> Result<T>
-    where
-        T: AddAssign<T> + MulAssign<T> + From<u8>,
-    {
-        let mut num = T::from(0);
-        for ch in slice {
-            match ch {
-                ch @ b'0'..=b'9' => {
-                    num *= T::from(10);
-                    num += T::from(*ch as u8 - b'0');
-                }
-                _ => return Err(Error::BadNumContent),
-            }
-        }
-        Ok(num)
     }
 
     fn parse_unsigned<T>(&mut self) -> Result<T>
@@ -145,31 +148,54 @@ impl<'de> Deserializer<'de> {
         T: AddAssign<T> + MulAssign<T> + From<u8>,
     {
         match self.parse_bulk_string()? {
-            Some(num_bytes) => self.parse_num(num_bytes),
+            Some(num_bytes) => {
+                let mut num = T::from(0);
+                for ch in num_bytes {
+                    match ch {
+                        ch @ b'0'..=b'9' => {
+                            num *= T::from(10);
+                            num += T::from(ch - b'0');
+                        }
+                        _ => return Err(Error::BadNumContent),
+                    }
+                }
+                Ok(num)
+            },
             None => Err(Error::BadNumContent),
         }
     }
 
-    // TODO  没搞清楚这里具体怎么利用parse_num
+
     fn parse_signed<T>(&mut self) -> Result<T>
     where
         T: Neg<Output = T> + AddAssign<T> + MulAssign<T> + From<i8>,
     {
-        unimplemented!()
-        // match self.parse_bulk_string()? {
-        //     Some(num_bytes) => {
-        //         if num_bytes.len() > 0 && num_bytes[0] == b'-' {
-        //             self.parse_num(&num_bytes[1..])
-        //         } else {
-        //             self.parse_num(num_bytes)
-        //         }
-        //     }
-        //     None => Err(Error::BadNumContent),
-        // }
+        match self.parse_bulk_string()? {
+            Some(num_bytes) => {
+                let mut neg = false;
+                let mut skip = 0;
+                if num_bytes.len() > 0 && num_bytes[0] == b'-' {
+                    neg = true;
+                    skip = 1;
+                }
+                let mut num = T::from(0);
+                for &ch in num_bytes.iter().skip(skip) {
+                    match ch {
+                        ch @ b'0'..=b'9' => {
+                            num *= T::from(10);
+                            num += T::from(ch as i8 - b'0' as i8);
+                        }
+                        _ => return Err(Error::BadNumContent),
+                    }
+                }
+                Ok(if neg { -num } else {num})
+            }
+            None => Err(Error::BadNumContent),
+        }
     }
 }
 
-impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<'de, R> {
     type Error = Error;
 
     // Look at the input data to decide what Serde data model type to
@@ -290,12 +316,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         self.deserialize_str(visitor)
     }
 
-    // 表示 visitor 不需要 bytes 的 ownership
+
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_bytes(self.parse_bulk_string()?.unwrap())
+        let s = self.parse_bulk_string()?.unwrap();
+        visitor.visit_bytes(&s[..])
     }
 
     fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value>
@@ -309,10 +336,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.input.starts_with(b"$-1") {
-            if let Some(_) = self.parse_bulk_string()? {
-                return Err(Error::ExpectedNone);
-            }
+        if self.peek_nchar(5)? == b"$-1\r\n" {
+            self.consume(5);
             visitor.visit_none()
         } else {
             visitor.visit_some(self)
@@ -491,18 +516,18 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     }
 }
 
-struct BulkStrings<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+struct BulkStrings<'a, 'de: 'a, R> {
+    de: &'a mut Deserializer<'de, R>,
     cnt: u64,
 }
 
-impl<'a, 'de> BulkStrings<'a, 'de> {
-    fn new(de: &'a mut Deserializer<'de>, cnt: u64) -> Self {
+impl<'a, 'de, R> BulkStrings<'a, 'de, R> {
+    fn new(de: &'a mut Deserializer<'de, R>, cnt: u64) -> Self {
         BulkStrings { de, cnt }
     }
 }
 
-impl<'a, 'de> SeqAccess<'de> for BulkStrings<'a, 'de> {
+impl<'a, 'de, R: io::Read> SeqAccess<'de> for BulkStrings<'a, 'de, R> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
@@ -519,7 +544,7 @@ impl<'a, 'de> SeqAccess<'de> for BulkStrings<'a, 'de> {
 
 // enum的实际项目只有一项，所以 EnumAccess 和 VariantAccess 的方法都传入self
 // 仅一次调用
-impl<'a, 'de> EnumAccess<'de> for BulkStrings<'a, 'de> {
+impl<'a, 'de, R: io::Read> EnumAccess<'de> for BulkStrings<'a, 'de, R> {
     type Error = Error;
     type Variant = Self;
 
@@ -538,7 +563,7 @@ impl<'a, 'de> EnumAccess<'de> for BulkStrings<'a, 'de> {
 }
 
 // 细分枚举项的类型
-impl<'a, 'de> VariantAccess<'de> for BulkStrings<'a, 'de> {
+impl<'a, 'de, R: io::Read> VariantAccess<'de> for BulkStrings<'a, 'de, R> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {
