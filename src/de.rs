@@ -1,12 +1,13 @@
 use std::ops::{AddAssign, MulAssign, Neg};
 
 use serde::de::{
-    self, Deserialize, DeserializeSeed, EnumAccess, SeqAccess, VariantAccess, Visitor,
+    self, Deserialize, DeserializeOwned, DeserializeSeed, EnumAccess, SeqAccess, VariantAccess,
+    Visitor,
 };
 
 use super::error::{Error, Result};
 
-use std::io::{self, Read, BufRead};
+use std::io::{self, BufRead, Read};
 
 use std::marker::PhantomData;
 
@@ -18,7 +19,6 @@ pub struct Deserializer<'de, R> {
     byte_offset: usize,
     marker: PhantomData<&'de ()>,
 }
-
 
 // 暴露的公共API，表明反序列化要用的数据格式，形如 from_xxx
 pub fn from_bytes<'a, T>(s: &'a [u8]) -> Result<T>
@@ -35,22 +35,20 @@ where
     // }
 }
 
-pub fn from_reader<'de, R, T>(r: R) -> Result<T> 
-where 
+pub fn from_reader<R, T>(r: R) -> Result<T>
+where
     R: io::Read,
-    T: Deserialize<'de>
+    T: DeserializeOwned,
 {
     let mut deserializer = Deserializer::from_reader(r);
     let t = T::deserialize(&mut deserializer)?;
     Ok(t)
 }
 
-
 pub struct IterDerserialzier<'de, R, T> {
     de: Deserializer<'de, R>,
     output: PhantomData<T>,
 }
-
 
 impl<'de, R, T> Iterator for IterDerserialzier<'de, R, T>
 where
@@ -63,16 +61,12 @@ where
         match self.de.peek_char() {
             Err(Error::Eof) => None,
             Err(e) => Some(Err(e)),
-            Ok(_) => {
-                Some(T::deserialize(&mut self.de))
-            }
+            Ok(_) => Some(T::deserialize(&mut self.de)),
         }
     }
 }
 
-
 impl<'de, R: io::Read> Deserializer<'de, R> {
-
     pub fn from_reader(r: R) -> Self {
         Deserializer {
             reader: io::BufReader::new(r),
@@ -87,7 +81,6 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
             output: PhantomData,
         }
     }
-
 
     // 查看第一个u8
     fn peek_char(&mut self) -> Result<u8> {
@@ -128,19 +121,18 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
         Ok(buf)
     }
 
-
     fn next_length_hint(&mut self) -> Result<Option<usize>> {
         let buf = self.next_lf()?;
         let n = buf.len();
         if buf[0] == b'-' {
             if buf.len() == 4 || buf == b"-1\r\n" {
-                return Ok(None)
+                return Ok(None);
             } else {
                 return Err(Error::BadLengthHint);
             }
         }
         let mut len = 0;
-        for &ch in buf.iter().take(n-2) {
+        for &ch in buf.iter().take(n - 2) {
             match ch {
                 ch @ b'0'..=b'9' => {
                     len *= 10;
@@ -153,14 +145,13 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
         Ok(Some(len))
     }
 
-
     fn parse_bulk_string(&mut self) -> Result<Option<Vec<u8>>> {
         if self.next_char()? != b'$' {
             return Err(Error::ExpectedDollarSign);
         }
         match self.next_length_hint()? {
             Some(len) => {
-                let mut buf = vec![0; len+2];
+                let mut buf = vec![0; len + 2];
                 self.reader.read_exact(&mut buf)?;
                 if buf[len + 1] != LF {
                     return Err(Error::ExpectedLF);
@@ -206,11 +197,10 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
                     }
                 }
                 Ok(num)
-            },
+            }
             None => Err(Error::BadNumContent),
         }
     }
-
 
     fn parse_signed<T>(&mut self) -> Result<T>
     where
@@ -234,7 +224,7 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
                         _ => return Err(Error::BadNumContent),
                     }
                 }
-                Ok(if neg { -num } else {num})
+                Ok(if neg { -num } else { num })
             }
             None => Err(Error::BadNumContent),
         }
@@ -361,7 +351,6 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<'de, R
     {
         self.deserialize_str(visitor)
     }
-
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where

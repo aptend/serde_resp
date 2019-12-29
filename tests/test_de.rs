@@ -1,6 +1,5 @@
-
-use serde_resp::{ Error, from_bytes };
 use serde_resp::de;
+use serde_resp::{from_bytes, Error};
 #[test]
 fn test_unit_struct() {
     #[derive(serde::Deserialize, PartialEq, Debug)]
@@ -104,7 +103,10 @@ fn test_iter() {
         Tuple(u32, u32),
         Struct { a: u32 },
     }
-    let bytes: Vec<u8> = b"*1\r\n$4\r\nUnit\r\n*2\r\n$7\r\nNewtype\r\n$1\r\n1\r\n".iter().cloned().collect();
+    let bytes: Vec<u8> = b"*1\r\n$4\r\nUnit\r\n*2\r\n$7\r\nNewtype\r\n$1\r\n1\r\n"
+        .iter()
+        .cloned()
+        .collect();
     let mut iter = de::Deserializer::from_reader(&bytes[..]).into_iter::<Test>();
     match iter.next() {
         Some(Ok(Test::Unit)) => assert!(true),
@@ -118,5 +120,4 @@ fn test_iter() {
         None => assert!(true),
         _ => assert!(false, "failed to stop iter"),
     };
-
 }

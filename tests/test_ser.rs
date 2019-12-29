@@ -1,6 +1,5 @@
 use serde_resp::to_bytes;
 
-
 #[test]
 fn test_struct() {
     #[derive(serde::Serialize)]
