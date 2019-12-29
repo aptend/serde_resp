@@ -35,6 +35,42 @@ where
     // }
 }
 
+pub fn from_reader<'de, R, T>(r: R) -> Result<T> 
+where 
+    R: io::Read,
+    T: Deserialize<'de>
+{
+    let mut deserializer = Deserializer::from_reader(r);
+    let t = T::deserialize(&mut deserializer)?;
+    Ok(t)
+}
+
+
+pub struct IterDerserialzier<'de, R, T> {
+    de: Deserializer<'de, R>,
+    output: PhantomData<T>,
+}
+
+
+impl<'de, R, T> Iterator for IterDerserialzier<'de, R, T>
+where
+    R: io::Read,
+    T: de::Deserialize<'de>,
+{
+    type Item = Result<T>;
+
+    fn next(&mut self) -> Option<Result<T>> {
+        match self.de.peek_char() {
+            Err(Error::Eof) => None,
+            Err(e) => Some(Err(e)),
+            Ok(_) => {
+                Some(T::deserialize(&mut self.de))
+            }
+        }
+    }
+}
+
+
 impl<'de, R: io::Read> Deserializer<'de, R> {
 
     pub fn from_reader(r: R) -> Self {
@@ -44,6 +80,14 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
             marker: PhantomData,
         }
     }
+
+    pub fn into_iter<T>(self) -> IterDerserialzier<'de, R, T> {
+        IterDerserialzier {
+            de: self,
+            output: PhantomData,
+        }
+    }
+
 
     // 查看第一个u8
     fn peek_char(&mut self) -> Result<u8> {
@@ -125,6 +169,8 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
                     return Err(Error::UnbalancedCRLF);
                 }
                 self.byte_offset += len + 2;
+                buf.pop(); // pop lf
+                buf.pop(); // pop cr
                 Ok(Some(buf))
             }
             None => Ok(None),
@@ -594,100 +640,4 @@ impl<'a, 'de, R: io::Read> VariantAccess<'de> for BulkStrings<'a, 'de, R> {
     {
         visitor.visit_seq(self)
     }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-#[test]
-fn test_unit_struct() {
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    struct Test;
-
-    let r = b"*1\r\n$4\r\nTest\r\n";
-    assert_eq!(Test, from_bytes(r).unwrap());
-    let r = b"*1\r\n$3\r\nTst\r\n";
-    match from_bytes::<Test>(r) {
-        Err(Error::MismatchedName) => assert!(true),
-        _ => assert!(false, "MismatchedName error not found"),
-    }
-}
-
-#[test]
-fn test_newtype_struct() {
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    struct Test(String);
-
-    let r = b"*2\r\n$4\r\nTest\r\n$4\r\ntest\r\n";
-    assert_eq!(Test("test".to_owned()), from_bytes(r).unwrap());
-    let r = b"*2\r\n$3\r\nTst\r\n$4\r\ntest\r\n";
-    match from_bytes::<Test>(r) {
-        Err(Error::MismatchedName) => assert!(true),
-        _ => assert!(false, "MismatchedName error not found"),
-    }
-}
-
-#[test]
-fn test_seq() {
-    let r = b"*2\r\n$4\r\nTest\r\n$4\r\ntest\r\n";
-    let vec_r: Vec<String> = from_bytes(r).unwrap();
-    let tuple_r: (String, String) = from_bytes(r).unwrap();
-    assert_eq!(vec!["Test".to_owned(), "test".to_owned()], vec_r);
-    assert_eq!(("Test".to_owned(), "test".to_owned()), tuple_r);
-}
-
-#[test]
-fn test_tuple_struct() {
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    struct Test(String, String);
-
-    let r = b"*3\r\n$4\r\nTest\r\n$4\r\ntest\r\n$3\r\nnil\r\n";
-    assert_eq!(
-        Test("test".to_owned(), "nil".to_owned()),
-        from_bytes(r).unwrap()
-    )
-}
-
-#[test]
-fn test_struct() {
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    struct Test {
-        key: String,
-        val: u32,
-        arr: Vec<u32>,
-    }
-
-    let r = b"*4\r\n$4\r\nTest\r\n$1\r\na\r\n$2\r\n42\r\n*3\r\n$1\r\n1\r\n$1\r\n2\r\n$1\r\n3\r\n";
-    assert_eq!(
-        Test {
-            key: "a".to_owned(),
-            val: 42,
-            arr: vec![1, 2, 3],
-        },
-        from_bytes(r).unwrap()
-    )
-}
-
-#[test]
-fn test_enum() {
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    enum Test {
-        Unit,
-        Newtype(u32),
-        Tuple(u32, u32),
-        Struct { a: u32 },
-    }
-
-    assert_eq!(Test::Unit, from_bytes(b"*1\r\n$4\r\nUnit\r\n").unwrap());
-    assert_eq!(
-        Test::Newtype(1),
-        from_bytes(b"*2\r\n$7\r\nNewtype\r\n$1\r\n1\r\n").unwrap()
-    );
-    assert_eq!(
-        Test::Tuple(1, 2),
-        from_bytes(b"*3\r\n$5\r\nTuple\r\n$1\r\n1\r\n$1\r\n2\r\n").unwrap()
-    );
-    assert_eq!(
-        Test::Struct { a: 1 },
-        from_bytes(b"*2\r\n$6\r\nStruct\r\n$1\r\n1\r\n").unwrap()
-    );
 }
