@@ -1,8 +1,7 @@
 use std::ops::{AddAssign, MulAssign, Neg};
 
 use serde::de::{
-    self, Deserialize, DeserializeOwned, DeserializeSeed, EnumAccess, SeqAccess, VariantAccess,
-    Visitor,
+    self, DeserializeOwned, DeserializeSeed, EnumAccess, SeqAccess, VariantAccess, Visitor,
 };
 
 use super::error::{Error, Result};
@@ -14,25 +13,9 @@ use std::marker::PhantomData;
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
-pub struct Deserializer<'de, R> {
+pub struct Deserializer<R> {
     reader: io::BufReader<R>,
     byte_offset: usize,
-    marker: PhantomData<&'de ()>,
-}
-
-// 暴露的公共API，表明反序列化要用的数据格式，形如 from_xxx
-pub fn from_bytes<'a, T>(s: &'a [u8]) -> Result<T>
-where
-    T: Deserialize<'a>,
-{
-    let mut deserializer = Deserializer::from_reader(s);
-    let t = T::deserialize(&mut deserializer)?;
-    Ok(t)
-    // if deserializer.input.is_empty() {
-    //     Ok(t)
-    // } else {
-    //     Err(Error::TrailingBytes)
-    // }
 }
 
 pub fn from_reader<R, T>(r: R) -> Result<T>
@@ -45,15 +28,15 @@ where
     Ok(t)
 }
 
-pub struct IterDerserialzier<'de, R, T> {
-    de: Deserializer<'de, R>,
+pub struct IterDerserialzier<R, T> {
+    de: Deserializer<R>,
     output: PhantomData<T>,
 }
 
-impl<'de, R, T> Iterator for IterDerserialzier<'de, R, T>
+impl<R, T> Iterator for IterDerserialzier<R, T>
 where
     R: io::Read,
-    T: de::Deserialize<'de>,
+    T: de::DeserializeOwned,
 {
     type Item = Result<T>;
 
@@ -66,16 +49,15 @@ where
     }
 }
 
-impl<'de, R: io::Read> Deserializer<'de, R> {
+impl<R: io::Read> Deserializer<R> {
     pub fn from_reader(r: R) -> Self {
         Deserializer {
             reader: io::BufReader::new(r),
             byte_offset: 0,
-            marker: PhantomData,
         }
     }
 
-    pub fn into_iter<T>(self) -> IterDerserialzier<'de, R, T> {
+    pub fn into_iter<T>(self) -> IterDerserialzier<R, T> {
         IterDerserialzier {
             de: self,
             output: PhantomData,
@@ -231,7 +213,7 @@ impl<'de, R: io::Read> Deserializer<'de, R> {
     }
 }
 
-impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<'de, R> {
+impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
     // Look at the input data to decide what Serde data model type to
@@ -551,18 +533,18 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<'de, R
     }
 }
 
-struct BulkStrings<'a, 'de: 'a, R> {
-    de: &'a mut Deserializer<'de, R>,
+struct BulkStrings<'a, R> {
+    de: &'a mut Deserializer<R>,
     cnt: u64,
 }
 
-impl<'a, 'de, R> BulkStrings<'a, 'de, R> {
-    fn new(de: &'a mut Deserializer<'de, R>, cnt: u64) -> Self {
+impl<'a, R> BulkStrings<'a, R> {
+    fn new(de: &'a mut Deserializer<R>, cnt: u64) -> Self {
         BulkStrings { de, cnt }
     }
 }
 
-impl<'a, 'de, R: io::Read> SeqAccess<'de> for BulkStrings<'a, 'de, R> {
+impl<'a, 'de, R: io::Read> SeqAccess<'de> for BulkStrings<'a, R> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
@@ -579,7 +561,7 @@ impl<'a, 'de, R: io::Read> SeqAccess<'de> for BulkStrings<'a, 'de, R> {
 
 // enum的实际项目只有一项，所以 EnumAccess 和 VariantAccess 的方法都传入self
 // 仅一次调用
-impl<'a, 'de, R: io::Read> EnumAccess<'de> for BulkStrings<'a, 'de, R> {
+impl<'a, 'de, R: io::Read> EnumAccess<'de> for BulkStrings<'a, R> {
     type Error = Error;
     type Variant = Self;
 
@@ -598,7 +580,7 @@ impl<'a, 'de, R: io::Read> EnumAccess<'de> for BulkStrings<'a, 'de, R> {
 }
 
 // 细分枚举项的类型
-impl<'a, 'de, R: io::Read> VariantAccess<'de> for BulkStrings<'a, 'de, R> {
+impl<'a, 'de, R: io::Read> VariantAccess<'de> for BulkStrings<'a, R> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {
