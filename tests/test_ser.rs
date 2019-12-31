@@ -1,4 +1,4 @@
-use serde_resp::to_bytes;
+use serde_resp::{to_bytes, Error};
 
 #[test]
 fn test_struct() {
@@ -40,4 +40,13 @@ fn test_enum() {
 
     let s = Test::Struct { a: 1 };
     assert_eq!(to_bytes(&s).unwrap(), b"*2\r\n$6\r\nStruct\r\n$1\r\n1\r\n");
+}
+
+#[test]
+fn test_float_fail() {
+    let f = vec![3.2, 1.4];
+    match to_bytes(&f) {
+        Err(Error::Message(msg)) => assert!(msg.find("support").is_some()),
+        _ => assert!(false, "no error when serializing float")
+    }
 }

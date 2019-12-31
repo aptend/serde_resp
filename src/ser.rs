@@ -82,13 +82,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         Ok(())
     }
 
-    fn serialize_f32(self, v: f32) -> Result<()> {
-        self.serialize_f64(f64::from(v))
+    fn serialize_f32(self, _v: f32) -> Result<()> {
+        Err(Error::Message("float is not supported".to_owned()))
     }
 
-    fn serialize_f64(self, v: f64) -> Result<()> {
-        self.append_element(&v.to_string().as_bytes());
-        Ok(())
+    fn serialize_f64(self, _v: f64) -> Result<()> {
+        Err(Error::Message("float is not supported".to_owned()))
     }
 
     // 单个字符也被当做字符串
@@ -232,7 +231,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 
     // Map 在 resp 中表示为多个命令。但是顺序无法保证
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
-        unimplemented!("map type is not supported")
+        Err(Error::Message("float is not supported".to_owned()))
     }
 }
 
@@ -349,14 +348,14 @@ impl<'a> ser::SerializeMap for &'a mut Serializer {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_key<T>(&mut self, key: &T) -> Result<()>
+    fn serialize_key<T>(&mut self, _key: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
         unimplemented!();
     }
 
-    fn serialize_value<T>(&mut self, value: &T) -> Result<()>
+    fn serialize_value<T>(&mut self, _value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
