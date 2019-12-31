@@ -7,7 +7,6 @@ pub struct Serializer {
     output: Vec<u8>,
 }
 
-// 按照约定，序列化的接口为 to_string, to_bytes, to_writer
 // Redis Simple Protocol规定，发往服务端的信息，是bulk string，这里用bytes来表示
 pub fn to_bytes<T>(value: &T) -> Result<Vec<u8>>
 where
@@ -19,7 +18,7 @@ where
 }
 
 impl Serializer {
-    // Serializer添加bulk String的函数
+    // Serializer添加bulk String的helper
     fn append_element(&mut self, element: &[u8]) {
         self.output
             .extend_from_slice(&format!("${}\r\n", element.len()).as_bytes());
@@ -30,21 +29,9 @@ impl Serializer {
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
-    // The output type produced by this `Serializer` during successful
-    // serialization. Most serializers that produce text or binary output should
-    // set `Ok = ()` and serialize into an `io::Write` or buffer contained
-    // within the `Serializer` instance, as happens here. Serializers that build
-    // in-memory data structures may be simplified by using `Ok` to propagate
-    // the data structure around.
     type Ok = ();
-
-    // The error type when some error occurs during serialization.
     type Error = Error;
 
-    // Associated types for keeping track of additional state while serializing
-    // compound data structures like sequences and maps. In this case no
-    // additional state is required beyond what is already stored in the
-    // Serializer struct.
     type SerializeSeq = Self;
     type SerializeTuple = Self;
     type SerializeTupleStruct = Self;
@@ -139,57 +126,10 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         Ok(())
     }
 
-    // 对于struct，当成集合类型，把它处理一个单独的resp命令
-    // 比如 struct Quit， 表明这个array长度为1
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
-        self.output.extend_from_slice(b"*1\r\n");
-        self.serialize_str(_name)
-    }
-
-    // 在处理unit的枚举时，binary格式一般使用索引表示，注重可读性的格式则会使用名称
-    // 这里实现当作unit struct处理
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        variant: &'static str,
-    ) -> Result<()> {
-        self.serialize_unit_struct(variant)
-    }
-
-    // 官方鼓励 serializer 把 newtype structs 仅仅当作特定数据的简单包装， 直接序列化
-    // 被包装的value就可以
-    // 但是延续之前对unit struct的处理，这里把newtype struct当作拥有一个参数的命令更为
-    // 合理
-    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
-    where
-        T: ?Sized + Serialize,
-    {
-        self.output.extend_from_slice(b"*2\r\n");
-        self.serialize_str(_name)?;
-        value.serialize(self)
-    }
-
-    // 枚举 newtype struct， 所以直接扔给 newtype struct 处理
-    fn serialize_newtype_variant<T>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        variant: &'static str,
-        value: &T,
-    ) -> Result<()>
-    where
-        T: ?Sized + Serialize,
-    {
-        self.serialize_newtype_struct(variant, value)
-    }
-
-    // 现在来处理复合类型的序列化
-    //
     // 列表的序列化，因为resp要求长度前置，所以如果集合没有长度就报错
     // 否则写入列表的起始头
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
-        match _len {
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
+        match len {
             None => Err(Error::Message(
                 "length of sequence can't be determined".to_owned(),
             )),
@@ -206,15 +146,68 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self.serialize_seq(Some(len))
     }
 
-    // tuple struct 要延续我们之前对newtype struct的处理，_name作为第一项
+    ///////////////////////////////////////// struct
+
+    // 对于struct，当成集合类型，把它处理一个单独的resp命令
+    // 形如struct Foo; 可以看成无参数命令
+    fn serialize_unit_struct(self, name: &'static str) -> Result<()> {
+        self.output.extend_from_slice(b"*1\r\n");
+        self.serialize_str(name)
+    }
+
+    // 官方鼓励 serializer 把 newtype structs 仅仅当作特定数据的简单包装，直接序列化
+    // 被包装的value就可以
+    // 但是延续之前对unit struct的处理，这里把newtype struct当作拥有一个参数的命令
+    // newtype_struct，形如struct Foo(i32);，单一参数命令
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.output.extend_from_slice(b"*2\r\n");
+        self.serialize_str(name)?;
+        value.serialize(self)
+    }
+
+    // tuple_struct，形如struct Foo(i32, i32, i32); 多参数命令，总长度为参数长度+1
     fn serialize_tuple_struct(
         self,
-        _name: &'static str,
+        name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
         let tuple = self.serialize_seq(Some(len + 1))?;
-        tuple.serialize_str(_name)?;
+        tuple.serialize_str(name)?;
         Ok(tuple)
+    }
+
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+        self.serialize_tuple_struct(name, len)
+    }
+
+    ///////////////////////////////////////// enum
+
+    // 在处理unit的枚举时，binary格式一般使用索引表示，注重可读性的格式则会使用名称
+    // 这里实现当作unit struct处理
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<()> {
+        self.serialize_unit_struct(variant)
+    }
+
+    // 枚举 newtype struct， 所以直接扔给 newtype struct 处理
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.serialize_newtype_struct(variant, value)
     }
 
     fn serialize_tuple_variant(
@@ -222,13 +215,9 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _len: usize,
+        len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        self.serialize_tuple_struct(variant, _len)
-    }
-
-    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
-        self.serialize_tuple_struct(_name, len)
+        self.serialize_tuple_struct(variant, len)
     }
 
     fn serialize_struct_variant(
@@ -236,12 +225,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _len: usize,
+        len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        self.serialize_tuple_struct(variant, _len)
+        self.serialize_tuple_struct(variant, len)
     }
 
-    // Map 在 resp 中表示为多个命令。但是顺序无法保证，考虑直接报错？
+    // Map 在 resp 中表示为多个命令。但是顺序无法保证
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
         unimplemented!("map type is not supported")
     }
@@ -356,46 +345,25 @@ impl<'a> ser::SerializeStructVariant for &'a mut Serializer {
     }
 }
 
-// Some `Serialize` types are not able to hold a key and value in memory at the
-// same time so `SerializeMap` implementations are required to support
-// `serialize_key` and `serialize_value` individually.
-//
-// There is a third optional method on the `SerializeMap` trait. The
-// `serialize_entry` method allows serializers to optimize for the case where
-// key and value are both available simultaneously. In JSON it doesn't make a
-// difference so the default behavior for `serialize_entry` is fine.
 impl<'a> ser::SerializeMap for &'a mut Serializer {
     type Ok = ();
     type Error = Error;
 
-    // The Serde data model allows map keys to be any serializable type. JSON
-    // only allows string keys so the implementation below will produce invalid
-    // JSON if the key serializes as something other than a string.
-    //
-    // A real JSON serializer would need to validate that map keys are strings.
-    // This can be done by using a different Serializer to serialize the key
-    // (instead of `&mut **self`) and having that other serializer only
-    // implement `serialize_str` and return an error on any other data type.
     fn serialize_key<T>(&mut self, key: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        key.serialize(&mut **self)
+        unimplemented!();
     }
 
-    // It doesn't make a difference whether the colon is printed at the end of
-    // `serialize_key` or at the beginning of `serialize_value`. In this case
-    // the code is a bit simpler having it here.
     fn serialize_value<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        unimplemented!();
     }
 
     fn end(self) -> Result<()> {
         Ok(())
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
