@@ -50,3 +50,8 @@ fn test_float_fail() {
         _ => assert!(false, "no error when serializing float")
     }
 }
+
+#[test]
+fn test_char() {
+    assert_eq!(to_bytes(&'🌟').unwrap(), "$4\r\n🌟\r\n".as_bytes());
+}

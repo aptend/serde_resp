@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
+//不存在借用数据，所以没有使用'de标记
 pub struct Deserializer<R> {
     reader: io::BufReader<R>,
     byte_offset: usize,
@@ -21,7 +22,7 @@ pub struct Deserializer<R> {
 pub fn from_reader<R, T>(r: R) -> Result<T>
 where
     R: io::Read,
-    T: DeserializeOwned,
+    T: DeserializeOwned,  // 反序列化的目标可以由任意生命周期的数据生成
 {
     let mut deserializer = Deserializer::from_reader(r);
     let t = T::deserialize(&mut deserializer)?;
@@ -57,6 +58,10 @@ impl<R: io::Read> Deserializer<R> {
         }
     }
 
+    pub fn bytes_offset(&self) -> usize {
+        self.byte_offset
+    }
+
     pub fn into_iter<T>(self) -> IterDerserialzier<R, T> {
         IterDerserialzier {
             de: self,
@@ -64,6 +69,7 @@ impl<R: io::Read> Deserializer<R> {
         }
     }
 
+    // parser
     // 查看第一个u8
     fn peek_char(&mut self) -> Result<u8> {
         Ok(self.peek_nchar(1)?[0])
@@ -88,7 +94,7 @@ impl<R: io::Read> Deserializer<R> {
         self.byte_offset += 1;
         Ok(ch)
     }
-
+    // TODO: 不要使用Vec<u8>，直接返回内部buffer的引用
     fn next_lf(&mut self) -> Result<Vec<u8>> {
         let mut buf = vec![];
         let n = self.reader.read_until(LF, &mut buf)?;
@@ -216,9 +222,7 @@ impl<R: io::Read> Deserializer<R> {
 impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
-    // Look at the input data to decide what Serde data model type to
-    // deserialize as. Not all data formats are able to support this operation.
-    // Formats that support `deserialize_any` are known as self-describing.
+    // 这个接口可以用来根据resp中的类型描述，自动反序列化到中间的类型Value之类的
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -296,7 +300,7 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     }
 
     // Float parsing is stupidly hard.
-    // 浮点数的解析，直译，蠢难蠢难的 😂， 放弃了
+    // 浮点数的解析，直译，蠢难蠢难的😂， 放弃了
     fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -311,15 +315,24 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
         unimplemented!()
     }
 
-    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        // Parse a string, check that it is one character, call `visit_char`.
-        unimplemented!()
+        let s = self.parse_bulk_string()?.unwrap();
+        match std::str::from_utf8(&s) {
+            Err(_) => Err(Error::ExpectedChar),
+            Ok(s) => {
+                if s.chars().count() != 1 {
+                    Err(Error::ExpectedChar)
+                } else {
+                    visitor.visit_char(s.chars().next().unwrap())
+                }
+            }
+        }
     }
 
-    // 对于 str 直接给 bytes, 用 visitor.visit_borrowed_bytes 去构建
+    // 对于 str 直接给 bytes, 用 visitor.visit_bytes 去构建
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -424,7 +437,6 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: Visitor<'de>,
     {
-        // Parse the opening bracket of the sequence.
         if self.next_char()? == b'*' {
             if let Some(len) = self.next_length_hint()? {
                 visitor.visit_seq(BulkStrings::new(&mut self, len as u64))
@@ -480,7 +492,7 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     }
 
     // resp 的反序列化暂时都可以通过 visit_seq 实现
-    // reser 也不支持 map 类型的序列化
+    // ser 也不支持 map 类型的序列化
     fn deserialize_map<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -518,7 +530,7 @@ impl<'de, 'a, R: io::Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: Visitor<'de>,
     {
-        // enum 体现为一个 array of bulk string, 所以不用检查name匹配，
+        // enum 体现为一个 array of bulk string, 不用检查name匹配，
         // 到内部 variant 反序列化时处理
         if self.next_char()? != b'*' {
             return Err(Error::ExpectedStarSign);

@@ -129,3 +129,9 @@ fn test_iter() {
         _ => assert!(false, "failed to stop iter"),
     };
 }
+
+
+#[test]
+fn test_char() {
+    assert_eq!(from_reader::<_, char>("$4\r\n🌟\r\n".as_bytes()).unwrap(), '🌟');
+}
