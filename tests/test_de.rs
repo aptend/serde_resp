@@ -130,8 +130,10 @@ fn test_iter() {
     };
 }
 
-
 #[test]
 fn test_char() {
-    assert_eq!(from_reader::<_, char>("$4\r\n🌟\r\n".as_bytes()).unwrap(), '🌟');
+    assert_eq!(
+        from_reader::<_, char>("$4\r\n🌟\r\n".as_bytes()).unwrap(),
+        '🌟'
+    );
 }

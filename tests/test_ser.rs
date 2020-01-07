@@ -47,7 +47,7 @@ fn test_float_fail() {
     let f = vec![3.2, 1.4];
     match to_bytes(&f) {
         Err(Error::Message(msg)) => assert!(msg.find("support").is_some()),
-        _ => assert!(false, "no error when serializing float")
+        _ => assert!(false, "no error when serializing float"),
     }
 }
 

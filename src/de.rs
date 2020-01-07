@@ -22,7 +22,7 @@ pub struct Deserializer<R> {
 pub fn from_reader<R, T>(r: R) -> Result<T>
 where
     R: io::Read,
-    T: DeserializeOwned,  // 反序列化的目标可以由任意生命周期的数据生成
+    T: DeserializeOwned, // 反序列化的目标类型可以由任意生命周期的数据生成
 {
     let mut deserializer = Deserializer::from_reader(r);
     let t = T::deserialize(&mut deserializer)?;
