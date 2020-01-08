@@ -1,16 +1,19 @@
-**serde for redis simple protocol， 学习用**
+**serde for redis simple protocol**
 
-### 基本情况:
+## 基本情况:
+
+个人学习演示使用，搭配 ['serde你在干什么'系列文章](https://aptend.github.io/2019/12/29/serde-what-are-you-doing-prepare/) 食用，风味更佳😋
+
 
 根据[resp的文档](https://redis.io/topics/protocol)，正常情况下，客户端 --> 服务端， 得用 **Array of Bulk Strings** 的格式告知 **命令及参数**；但是服务端反馈结果给客户端时，可以使用**任意的格式组合**。这其实表示了有两套序列化和反序列化的接口：
 
 1. 客户端的序列化，服务端的反序列化，以 **Array of Bulk Strings** 为中介。该模式下即使是数字，也会先格式化为字符串，比如`$2\r\n42\r\n`
 2. 服务端的序列化，客户端的反序列化，以 **任意的格式组合** 为中介。数字直接用`:42\r\n`
 
-目前只实现了第一种，姑且认为服务端和客户端使用的是同一套数据结构，它给客户端发送的也是**Array of Bulk Strings**，实际类型由两端公认的数据结构进行约束。第二种应该由serde_resp提供一个枚举类型作中转。
+目前只实现了第一种，姑且认为服务端和客户端使用的是同一套数据结构，它给客户端发送的也是**Array of Bulk Strings**，实际类型由两端公认的数据结构进行约束。第二种应该由serde_resp提供一个枚举类型作中转，比如`Value`，像serde_json那样。
 
 
-### Serializer主要特点:
+## Serializer:
 
 - 不支持浮点数、HashMap
 - `unit_struct`，形如`struct Foo;`，看成无参数命令
@@ -19,7 +22,7 @@
 - `struct`，形如`struct Foo {key: i32, val:i32}`，多参数命令，同`tuple_struct`
 - 枚举的variant基本上延续和struct相同处理方式
 
-### Deserializer主要特点:
+## Deserializer:
 
 - 不支持浮点数、HashMap
 - 构造函数`from_reader`，目标类型仅支持`DeserializeOwned`
@@ -27,7 +30,7 @@
 - 提供`into_iter`，支持pipeline命令解析
 
 
-### Examples:
+## Examples:
 
 ```rust
 #[derive(Debug, Serialize, Deserialize)]
